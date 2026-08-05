@@ -1,0 +1,17 @@
+# DreamQAS — pinned to the versions the reported results were produced with.
+# Python 3.10.20.
+#
+# Install torch first, matching your CUDA (the pin below is the cu128 build used
+# for the 8q/10q GPU rotosolve path; CPU-only torch is fine for 4q/6q):
+#     pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
+
+numpy==2.2.6
+scipy==1.15.2
+torch==2.10.0
+qulacs==0.6.13          # statevector + density-matrix VQE backend
+matplotlib==3.10.8      # analysis/plot_*.py only
+
+# Noise experiments only (code/noise_ptm). CPU JAX is what the paper's noise runs
+# used — it is FASTER than GPU for the 4-qubit PTM kernel (256-dim, dispatch-bound).
+jax==0.6.2
+jaxlib==0.6.2

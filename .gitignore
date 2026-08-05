@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+env/
+
+# Run outputs — never committed
+results/
+runs/
+outputs/
+logs/
+wandb/
+*.pt
+*.pth
+*.ckpt
+*.jsonl
+nohup.out
+
+# Large Hamiltonians (10q/12q exceed GitHub's file-size limit)
+data/mol_data/*_10q_*.npz
+data/mol_data/*_12q_*.npz
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Migration backups
+*.prehome
+*.prepoint
+*.prenoise
+*.orig
