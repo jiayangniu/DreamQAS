@@ -1,26 +1,12 @@
-"""Entry point for WM-QAS v2 baseline (no world model / imagination).
-
-Usage:
-    python main_baseline.py --config LiH4q_baseline --experiment_name baseline/ --gpu_id 0 --seed 0
-
-Hyperparameters are read from [baseline] section of the .cfg file.
-Priority: CLI args > [baseline] in cfg > argparse defaults.
-"""
-
-# IMPORTANT: runtime_init must run before any scientific-library import so
-# BLAS thread pools see the env vars before initialization. Defaults match
-# main_baseline's argparse defaults so the limiter works even when invoked
-# with no CLI args.
 import runtime_init
 _RUNTIME_NUM_THREADS = runtime_init.setup_blas_threads(
-    default_config="LiH4q_baseline",
-    default_experiment_name="baseline/",
+    default_config="G0_v2_LiH4q",
+    default_experiment_name="analysis/",
 )
-# Enable NVIDIA MPS by default (concurrent GPU sharing, ~4x under many runs).
-# Must precede `import torch`; no-op without MPS tools or with DREAMQAS_NO_MPS=1.
 runtime_init.ensure_mps()
 
 import sys
+import json
 import argparse
 import pathlib
 import torch
@@ -53,12 +39,14 @@ def get_args(argv, baseline_defaults=None):
     parser = argparse.ArgumentParser(description="WM-QAS v2 Baseline (no WM)")
 
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--config", type=str, default="LiH4q_baseline")
-    parser.add_argument("--experiment_name", type=str, default="baseline/")
+    parser.add_argument("--config", type=str, default="G0_v2_LiH4q")
+    parser.add_argument("--experiment_name", type=str, default="analysis/")
     parser.add_argument("--gpu_id", type=int, default=0)
-    parser.add_argument("--molecule", type=str, default="")          # for the standardized ckpt schedule
-    parser.add_argument("--out_dir", type=str, default=None)         # override output root
-    parser.add_argument("--eval_only", type=str, default=None)       # checkpoint .pt -> frozen offline eval
+    parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    parser.add_argument("--legacy_noise_config", type=json.loads, help='Explicit JSON noise settings for old checkpoints, e.g. {"mode":"off"}')
+    parser.add_argument("--molecule", type=str, default="")
+    parser.add_argument("--out_dir", type=str, default=None)
+    parser.add_argument("--eval_only", type=str, default=None)
     parser.add_argument("--n_eval_episodes", type=int, default=20)
 
     parser.add_argument("--max_episodes",          type=int,   default=20000)
@@ -68,10 +56,7 @@ def get_args(argv, baseline_defaults=None):
     parser.add_argument("--entropy_coef",           type=float, default=1e-3)
     parser.add_argument("--reinforce_gamma",        type=float, default=0.99)
 
-    # noisy environment (PTM backend, code/noise_ptm/). Default off -> legacy path.
-    # This arm has no Config dataclass, so the flags live directly on args and are
-    # handed to noise_ptm.integration.build_evaluator after the env is constructed.
-    parser.add_argument("--noise_mode",   type=str,   default="off")   # off | ptm
+    parser.add_argument("--noise_mode",   type=str,   default="off")
     parser.add_argument("--noise_p1q",    type=float, default=0.0)
     parser.add_argument("--noise_p2q",    type=float, default=0.0)
     parser.add_argument("--noise_p_ro",   type=float, default=0.0)
@@ -84,26 +69,25 @@ def get_args(argv, baseline_defaults=None):
 
 
 if __name__ == "__main__":
-    # Step 1: pre-parse to locate cfg file
     pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--config", default="LiH4q_baseline")
-    pre.add_argument("--experiment_name", default="baseline/")
+    pre.add_argument("--config", default="G0_v2_LiH4q")
+    pre.add_argument("--experiment_name", default="analysis/")
     pre_args, _ = pre.parse_known_args(sys.argv[1:])
 
-    # Step 2: load cfg
     conf = get_config(pre_args.experiment_name, f"{pre_args.config}.cfg")
 
-    # Step 3: extract [baseline] section
     baseline_defaults = _parse_baseline_conf(conf.get("baseline", {}))
 
-    # Step 4: full arg parse (cfg fills defaults, CLI overrides)
     args = get_args(sys.argv[1:], baseline_defaults)
 
-    torch.cuda.set_device(args.gpu_id)
-    # Keep PyTorch intra-op threading in sync with the BLAS cap set by runtime_init.
+    use_cuda = args.device == "cuda" or (args.device == "auto" and torch.cuda.is_available())
+    if use_cuda and not torch.cuda.is_available():
+        raise RuntimeError("CUDA requested but unavailable; use --device cpu")
+    if use_cuda:
+        torch.cuda.set_device(args.gpu_id)
     torch.set_num_threads(_RUNTIME_NUM_THREADS if _RUNTIME_NUM_THREADS is not None else 1)
     utils.set_seed(args.seed)
-    device = torch.device(f"cuda:{args.gpu_id}")
+    device = torch.device(f"cuda:{args.gpu_id}" if use_cuda else "cpu")
 
     print("=" * 62)
     for section, values in conf.items():
@@ -119,22 +103,20 @@ if __name__ == "__main__":
             print(f"  {k}: {getattr(args, k)}")
     print("=" * 62)
 
-    # frozen offline eval of ONE baseline checkpoint -> print stats (no training)
     if args.eval_only:
         import json
         from runner_baseline import evaluate_baseline_checkpoint
         stats = evaluate_baseline_checkpoint(args.eval_only, args.n_eval_episodes,
-                                             device=f"cuda:{args.gpu_id}")
+                                             device=str(device), legacy_noise_config=args.legacy_noise_config)
         print(json.dumps(stats, default=str), flush=True)
         sys.exit(0)
 
     environment = CircuitEnv(conf, device=device)
 
-    # ---- noisy environment (default OFF; no-op unless --noise_mode ptm) ----
     if str(args.noise_mode).lower() != "off":
         _code_dir = str(pathlib.Path(__file__).resolve().parent.parent)
         if _code_dir not in sys.path:
-            sys.path.insert(0, _code_dir)        # .../DreamQAS/code -> `import noise_ptm`
+            sys.path.insert(0, _code_dir)
         from noise_ptm.integration import build_evaluator
         _ev = build_evaluator(
             environment, mode=args.noise_mode, p1q=args.noise_p1q, p2q=args.noise_p2q,
@@ -142,7 +124,7 @@ if __name__ == "__main__":
         )
         environment.attach_noisy_evaluator(_ev)
 
-    root = args.out_dir or "results"
+    root = str(pathlib.Path(args.out_dir or "runs/baseline").expanduser().resolve())
     output_path = f"{root}/baseline_{args.experiment_name}{args.config}/seed_{args.seed}"
     pathlib.Path(output_path).mkdir(parents=True, exist_ok=True)
 

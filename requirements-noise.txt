@@ -1,0 +1,4 @@
+# Optional four-qubit PTM noise backend (CPU JAX).
+-r requirements.txt
+jax==0.6.2
+jaxlib==0.6.2

@@ -26,7 +26,7 @@ wandb/
 *.jsonl
 nohup.out
 
-# Large Hamiltonians (10q/12q exceed GitHub's file-size limit)
+# Larger Hamiltonians distributed separately
 data/mol_data/*_10q_*.npz
 data/mol_data/*_12q_*.npz
 
@@ -40,3 +40,23 @@ data/mol_data/*_12q_*.npz
 *.prepoint
 *.prenoise
 *.orig
+
+# Local research/operational material
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.log
+*.tar
+*.tar.gz
+*.zip
+*.npy
+*.npz
+!data/mol_data/*.npz
+data/mol_data/*_10q_*.npz
+data/mol_data/*_12q_*.npz
+checkpoints/
+raw_run_outputs/
+backups/
+*.bak

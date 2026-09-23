@@ -1,16 +1,3 @@
-"""Rotosolve numeric-safety check (verification item 1, load-bearing).
-
-Confirms that on the 8q/10q GPU-rotosolve path the REPORTED energy is complex128 (Qulacs),
-not the GPU complex64 search energy — so the 1.6 mHa success label never flips on fp32 error.
-
-For a random circuit stepped through the rotosolve env, at each step compares:
-  (a) env.energy (what step() reports)  vs  env.reference_energy()  -> must be ~0 (both Qulacs)
-  (b) env.energy (Qulacs complex128)    vs  env._energy_via_bvqe() (GPU complex64) -> fp32 gap
-Reports the max gaps in mHa. (a) must be ~0; (b) is the raw fp32 error (informational; it does
-NOT affect the label because the reported energy is (a)'s complex128 value).
-
-Run:  CUDA_VISIBLE_DEVICES=0 DREAMQAS_NO_MPS=1 python analysis/rotosolve_numeric_check.py --molecule BeH2_8q
-"""
 import argparse
 import os
 import sys
@@ -49,11 +36,11 @@ def main():
             break
         act = int(np.random.choice(legal))
         env.step(list(trans[act]), torch.tensor(0.0), train_flag=True)
-        e_step = float(env.energy)                       # Qulacs complex128 (what step reports)
-        e_ref = float(env.reference_energy())            # Qulacs complex128 (recompute)
-        e_bvqe = float(env._energy_via_bvqe())           # GPU complex64
-        gap_ref.append(abs(e_step - e_ref) * 1000.0)     # mHa
-        gap_fp32.append(abs(e_step - e_bvqe) * 1000.0)   # mHa
+        e_step = float(env.energy)
+        e_ref = float(env.reference_energy())
+        e_bvqe = float(env._energy_via_bvqe())
+        gap_ref.append(abs(e_step - e_ref) * 1000.0)
+        gap_fp32.append(abs(e_step - e_bvqe) * 1000.0)
         energies.append(e_step)
 
     print(f"steps evaluated: {len(gap_ref)}")

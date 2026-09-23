@@ -1,143 +1,74 @@
 # DreamQAS
 
-**A known-dynamics (energy-feedback) world model for VQE-efficient Quantum Architecture Search.**
+Research code for quantum architecture search with an energy-surrogate world model,
+imagined policy updates, and VQE verification. This repository contains the reference
+DreamQAS implementation, its model-free REINFORCE control, a four-qubit PTM noise
+backend, and selected frozen-policy evaluation and table scripts.
 
-Reference implementation for the paper. This repository contains the method, the ablation
-arms, the analysis pipeline that produces every reported table and figure, and the noise
-backend used in the noise section.
+## Scope
 
----
+- Training and small-scale reproduction use the bundled 4–8 qubit Hamiltonians.
+- Canonical and oracle-free training are separate protocols. The default canonical
+  method uses ground-state error in its training signal; `--oracle_free 1` uses an
+  energy-frontier score instead. Ground-state energies may still be used for diagnostics.
+- Raw experiment campaigns, trained checkpoints, and external comparison methods are
+  **not bundled**. Complete paper tables require those run outputs. This is a source
+  release, not a precomputed-results archive or a claim that every paper figure can
+  be reproduced from the files alone.
+- Cluster schedulers, migration utilities, temporary exploratory analyses, and large
+  output folders are excluded. Historical configuration files remain for checkpoint
+  compatibility; use `G0_v2_*` for the documented protocol.
 
-## What the method does
+## Install
 
-RL-based Quantum Architecture Search (RLQAS) runs a VQE optimization at *every* step to score
-each candidate circuit. VQE dominates the cost and becomes the bottleneck as molecules grow.
+The reference environment uses Python 3.10 and Linux. A CPU is sufficient for the
+LiH4q example; larger runs benefit from a compatible NVIDIA GPU.
 
-DreamQAS learns an **energy surrogate** that predicts a circuit prefix's post-VQE error — and
-its epistemic uncertainty — *without* running VQE, and plans with it. Because the
-circuit-construction dynamics are **known** (they are given by the circuit rules), the agent
-generates multi-step **imagined rollouts** entirely in symbolic space to train the policy with
-far fewer real VQE calls.
+```bash
+python3.10 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+# Optional: PTM noise experiments and the full release regression suite
+python -m pip install -r requirements-noise.txt
+```
 
-It is model-based RL on a *known-dynamics* world model: circuit prefixes evolve exactly; we do
-**not** learn transitions or variational-parameter dynamics. Only the *energy feedback* is
-learned. In lineage this sits between AlphaZero (known dynamics + learned value) and Dreamer
-(imagination-based policy gradient); unlike MuZero, latent dynamics are not learned.
+The dependency files pin the reference versions. If using CUDA, install a PyTorch
+build compatible with your driver. NVIDIA MPS is disabled by default; starting a
+shared MPS service requires the explicit `DREAMQAS_ENABLE_MPS=1` environment setting.
 
-Full method specification — tensor shapes, losses, hyperparameters:
-**[`docs/method/ARCHITECTURE.md`](docs/method/ARCHITECTURE.md)**.
+## Small CPU example
 
----
+Run from the repository root. This performs **one iteration / four real episodes**;
+it checks training and checkpoint evaluation, not convergence or the imagination
+phase (which normally starts after warm-up).
+
+```bash
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+python code/WM_QAS/phase2_surrogate/runner.py \
+  --molecule LiH4q --seed 0 --device cpu --n_iterations 1 \
+  --out_dir runs/smoke --tag _smoke
+python code/WM_QAS/analysis/eval_policy_traces.py \
+  runs/smoke/gru_energy_surrogate_LiH4q_s0_smoke \
+  --device cpu --n_inter 1 --n_final 1
+```
+
+Outputs include `config.json`, training logs, `ckpt/ep4.pt`, and
+`eval_traces.jsonl`. Reuse a run directory only when deliberately replacing its
+training outputs. See [REPRODUCE.md](REPRODUCE.md) for matched baseline commands,
+campaign naming, noise evaluation, tests, and protocol limits.
 
 ## Layout
 
-```
-code/WM_QAS/
-  phase2_surrogate/      the method
-    runner.py              main loop: real + imagination REINFORCE, WM refresh,
-                           fidelity gate, DAgger
-    surrogate_wm.py        energy-surrogate world model
-                           (GRU encoder + K-ensemble + Randomized Prior Functions)
-    imagine.py             known-dynamics imagination
-                           (`Shadow` legal masking + surrogate scoring + λ-returns)
-    buffer.py              replay buffer (mixed elite / prioritized / stratified sampling)
-    escale.py              oracle-free empirical-frontier scoring (signed-log)
-    config.py              config dataclass + CLI contract
-    eval_harness.py        frozen offline evaluation
-  environment.py         circuit-construction MDP + Hamiltonian loading
-  VQE.py                 VQE backends (COBYLA statevector; rotosolve for 8q+)
-  circuit_rules.py       legal-action rules
-  main_baseline.py       model-free RLQAS baseline (no world model)
-  runner_baseline.py
-  agent/, world_model/   policy networks and the shared MLP
-  analysis/              every table and figure in the paper is produced here
-  configuration_files/   .cfg files for the baseline arm
-  tests/
+| Path | Purpose |
+|---|---|
+| `code/WM_QAS/phase2_surrogate/` | World model, training loop, imagination, checkpoint evaluation |
+| `code/WM_QAS/main_baseline.py` | Model-free REINFORCE control |
+| `code/WM_QAS/analysis/` | Selected evaluation and policy-quality table scripts |
+| `code/WM_QAS/configuration_files/` | Environment and historical configuration files |
+| `code/noise_ptm/` | Four-qubit noisy energy evaluator and physics checks |
+| `data/` | Small Hamiltonians, file hashes, and data scope |
+| `docs/method/ARCHITECTURE.md` | Implementation map and method conventions |
 
-code/noise_ptm/          PTM / Pauli–Liouville noisy-expectation backend (noise section)
-
-data/mol_data/           Hamiltonians, 4–8 qubits (see "Molecules" below)
-experiments/launchers/   the launch scripts used for the reported campaigns
-```
-
----
-
-## Quick start
-
-```bash
-pip install -r requirements.txt
-cd code/WM_QAS
-
-# DreamQAS (Full)
-python phase2_surrogate/runner.py --molecule LiH4q --seed 0 --out_dir ./runs \
-    --encoder gru --reward energy --imagination surrogate \
-    --independent_ensemble 1 --dagger 1 --dir_reweight 1 --imag_adv_normalize 1
-
-# ablation: no imagination
-python phase2_surrogate/runner.py --molecule LiH4q --seed 0 --out_dir ./runs \
-    --encoder gru --reward energy --imagination none \
-    --independent_ensemble 1 --dagger 1 --dir_reweight 1 --imag_adv_normalize 1
-
-# model-free RLQAS baseline
-python main_baseline.py --config G0_baseline_LiH4q --experiment_name analysis/ --seed 0
-```
-
-`--out_dir` is required in practice — the default points at the authors' cluster. See
-[`REPRODUCE.md`](REPRODUCE.md) for the full protocol, the exact arms, and the analysis pipeline.
-
----
-
-## Molecules
-
-Hamiltonians up to 8 qubits ship with this repository (≈3 MB total):
-
-| Molecule | Qubits | Mapping | Role |
-|---|---|---|---|
-| LiH | 4 | parity | main task |
-| BeH₂ | 6 | Jordan–Wigner | easy — search is close to trivial |
-| LiH | 6 | Jordan–Wigner | hard — energy plateau, luck-dominated |
-| BeH₂ | 8 | Jordan–Wigner | scale-up (6-31G, 2e/4o) |
-| H₂O | 8 | Jordan–Wigner | scale-up (STO-3G, 4e/4o) |
-
-The 10- and 12-qubit Hamiltonians are 8–270 MB each and exceed GitHub's file-size limit, so
-they are **not** in this repository. Regenerate them with OpenFermion/PySCF from the basis and
-active space recorded in `docs/method/ARCHITECTURE.md`, or request the exact `.npz` files.
-
-Two H₂O-8q geometries are shipped. The paper uses the equilibrium one
-(`O 0 0 0; H 0 0.757 0.586; H 0 -0.757 0.586`).
-
----
-
-## Noise experiments
-
-`code/noise_ptm/` implements the noisy expectation used in the noise section: the density
-matrix is propagated in the Pauli–Liouville (PTM) representation, so every ⟨H⟩ is an **exact**
-noisy expectation — no measurement sampling, no shots, hence deterministic given (circuit, θ).
-
-Three channels: depolarizing after each single-qubit rotation (`p1q`), depolarizing after each
-CNOT (`p2q`), and symmetric readout assignment error (`p_ro`). Readout error and
-measurement-basis-change depolarizing are folded into the Hamiltonian's Pauli vector at compile
-time, so they cost nothing at run time. Noise levels are taken from IBM device calibration
-medians; see `code/noise_ptm/spec.py`.
-
-Everything is off by default — with `noise_mode="off"` the code path is byte-identical to the
-noiseless one.
-
-```bash
-python code/noise_ptm/tests/test_equivalence.py     # PTM vs qulacs, noiseless and noisy
-```
-
----
-
-## Baselines
-
-The comparison baselines (CRLQAS, HyRLQAS, GQE, TF-QAS, QuantumDARTS) are **not** in this
-repository — they come from their own published implementations, collected in a separate
-benchmark harness. `REPRODUCE.md` records which implementation each number came from and
-every modification that was made to them.
-
----
-
-## Licence
-
-See [`LICENSE`](LICENSE).
+See [data/README.md](data/README.md) for Hamiltonian availability, and
+[LICENSE](LICENSE) for the MIT license. Please identify the repository commit and
+experimental configuration when reporting results based on this code.

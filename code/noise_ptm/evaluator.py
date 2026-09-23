@@ -1,21 +1,3 @@
-"""``NoisyEvaluator`` — the one class DreamQAS touches.
-
-Usage from ``environment.py`` (all guarded so the noiseless path is untouched):
-
-    # once, when the env is built
-    env._noisy_eval = NoisyEvaluator(spec, hamiltonian, n_qubits, energy_shift, max_slots)
-
-    # once per RL step, before the optimizer runs
-    env._noisy_eval.rebind(env.state)
-
-    # inside COBYLA's objective, thousands of times per step
-    e = env._noisy_eval.energy(thetas)
-
-The split matters: ``rebind`` does the state-tensor parse and the host->device upload of
-the slot arrays; ``energy`` then ships only the angle vector. Upstream measured that
-separation as a 1.21x end-to-end win at 4 qubits.
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -28,7 +10,6 @@ from .spec import NoiseSpec4q
 
 
 class NoisyEvaluator:
-    """Exact noisy ⟨H⟩ on a PTM/Pauli-Liouville backend. No shots, deterministic."""
 
     def __init__(
         self,
@@ -43,8 +24,6 @@ class NoisyEvaluator:
         self.n_qubits = int(n_qubits)
         self.energy_shift = float(energy_shift)
         if max_slots is None:
-            # One slot per gate (we emit no TIME/READOUT slots). num_layers is
-            # DreamQAS's gate budget; pad a little so a full circuit always fits.
             base = int(num_layers) if num_layers else 64
             max_slots = int(base) + 8
         self.max_slots = int(max_slots)
@@ -55,14 +34,11 @@ class NoisyEvaluator:
         self._dev_slots = None
         self._n_rotations = 0
         self._n_active = 0
-        # Diagnostics: how many objective evaluations this evaluator has served.
         self.n_energy_calls = 0
         self.n_rebinds = 0
 
-    # -- per RL step ------------------------------------------------------
 
     def rebind(self, state_tensor) -> int:
-        """Parse the circuit and upload its slot arrays. Returns the rotation count."""
         slots, _angles = state_tensor_to_padded_slots(
             state_tensor, self.n_qubits, self.max_slots
         )
@@ -72,14 +48,8 @@ class NoisyEvaluator:
         self.n_rebinds += 1
         return slots.n_rotations
 
-    # -- per objective evaluation ----------------------------------------
 
     def energy(self, thetas) -> float:
-        """Noisy ⟨H⟩ for the currently bound circuit at angles ``thetas``.
-
-        ``thetas`` must be in the same order DreamQAS's optimizer uses — layer-major,
-        then (axis, qubit) row-major — which is what ``parse_state_tensor`` produces.
-        """
         if self._dev_slots is None:
             raise RuntimeError("NoisyEvaluator.energy() called before rebind()")
         arr = np.asarray(thetas, dtype=np.float32).reshape(-1)
@@ -96,20 +66,13 @@ class NoisyEvaluator:
             energy_shift=self.energy_shift,
         )
 
-    # -- convenience: bind and evaluate in one call (offline sweeps, tests) --
 
     def energy_of(self, state_tensor, thetas) -> float:
         self.rebind(state_tensor)
         return self.energy(thetas)
 
     def energy_from_state(self, state_tensor) -> float:
-        """Noisy ⟨H⟩ using the angles already embedded in the state tensor.
-
-        This is the once-per-step path (``environment.get_energy``), as opposed to the
-        thousands-per-step ``energy()``. It re-parses, so do not use it inside an
-        optimizer loop.
-        """
-        from .forward_4q import state_tensor_to_padded_slots  # local: keeps import cheap
+        from .forward_4q import state_tensor_to_padded_slots
 
         slots, angles = state_tensor_to_padded_slots(
             state_tensor, self.n_qubits, self.max_slots

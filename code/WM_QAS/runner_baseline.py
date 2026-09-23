@@ -1,14 +1,3 @@
-"""WM-QAS v2 Baseline Runner — no world model / imagination.
-
-Identical update dynamics to WMRunnerV2 for fair comparison:
-  - real_episodes_per_iter episodes collected per iteration, then one batched
-    REINFORCE update (same granularity as v2)
-  - illegal action masks saved at collection time and reused in loss computation
-    (behavior policy == training policy)
-  - cross-episode return normalization with std(unbiased=False) — NaN-safe
-  - metrics.jsonl keys aligned with v2 for direct comparison
-"""
-
 from __future__ import annotations
 
 import json
@@ -26,7 +15,6 @@ from phase2_surrogate.config import checkpoint_episodes as _ckpt_sched_for
 
 
 class BaselineRunner:
-    """No-WM baseline: plain REINFORCE on raw observations."""
 
     def __init__(
         self,
@@ -35,15 +23,12 @@ class BaselineRunner:
         device: torch.device,
         output_path: str,
         seed: int,
-        # Actor
         actor_hidden_dim: int = 512,
         actor_lr: float = 3e-5,
         entropy_coef: float = 1e-3,
         reinforce_gamma: float = 0.99,
-        # Training
         max_episodes: int = 20000,
         real_episodes_per_iter: int = 4,
-        # standardized eval protocol
         molecule: str = "",
         env_cfg: str = "",
         experiment_name: str = "",
@@ -62,7 +47,6 @@ class BaselineRunner:
         self.env_cfg = env_cfg
         self.experiment_name = experiment_name
         self.chem_acc_mHa = chem_acc_mHa
-        # standardized episode-checkpoint schedule (¼-dense 15 + every 1500)
         if ckpt_episodes:
             self.ckpt_sched = sorted({int(x) for x in ckpt_episodes})
         elif molecule:
@@ -99,7 +83,6 @@ class BaselineRunner:
         self.total_eps = 0
         self.total_vqe_calls = 0
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _get_obs_structure(self) -> np.ndarray:
         state = self.env.state
@@ -117,14 +100,13 @@ class BaselineRunner:
         ep_return = 0.0
 
         obs_tensor = torch.tensor(first_obs, device=self.device)
-        step_errs = []   # true error (Ha) at each step -> episode-best = min over prefixes
-        step_energies = []   # env.energy at each step (for trajectory.jsonl)
-        step_dones = []      # done flag at each step
+        step_errs = []
+        step_energies = []
+        step_dones = []
 
         for _ in range(env.num_layers + 1):
             ill = env.illegal_action_new()
 
-            # Save the mask used for this step so loss uses the same distribution
             ill_mask = torch.zeros(self.action_size, dtype=torch.bool)
             if ill:
                 ill_mask[ill] = True
@@ -159,20 +141,18 @@ class BaselineRunner:
             "obs":         np.array(obs_list, dtype=np.float32),
             "actions":     np.array(action_list, dtype=np.int64),
             "rewards":     np.array(reward_list, dtype=np.float32),
-            "ill_masks":   torch.stack(ill_mask_list),  # [T, action_size]
+            "ill_masks":   torch.stack(ill_mask_list),
             "ep_return":   ep_return,
             "final_error": true_error,
             "min_error":   min(step_errs) if step_errs else true_error,
             "best_prefix": action_list[: best_step + 1],
             "n_steps":     len(action_list),
-            "step_errs":   step_errs,          # Ha, per step
-            "step_energies": step_energies,    # per step
-            "step_dones":  step_dones,         # per step
+            "step_errs":   step_errs,
+            "step_energies": step_energies,
+            "step_dones":  step_dones,
         }
 
     def _eval_rollout(self) -> float:
-        """Frozen, side-effect-free episode to the FIXED max depth (no accuracy early-stop;
-        structural termination only). Returns e_j = min_t eps (mHa)."""
         env = self.env
         env.reset()
         obs = torch.tensor(self._get_obs_structure(), device=self.device)
@@ -198,7 +178,7 @@ class BaselineRunner:
             "episode": episode,
             "actor": self.actor.state_dict(),
             "optimizer": self.optimizer.state_dict(),
-            "vqe_calls": self.total_vqe_calls,   # per-circuit unit (== sum of episode step counts)
+            "vqe_calls": self.total_vqe_calls,
             "vqe_nfev": 0,
             "best_err_mHa": self.best_error * 1000.0,
             "best_seq": list(self.best_seq) if self.best_seq is not None else None,
@@ -206,16 +186,10 @@ class BaselineRunner:
             "molecule": self.molecule, "env_cfg": self.env_cfg,
             "experiment_name": self.experiment_name, "seed": self.seed,
             "actor_hidden_dim": self.actor_hidden_dim,
+            "noise_config": baseline_noise_config(self.env),
         }, f"{cdir}/ep{episode}.pt")
 
     def _reinforce_update(self, episodes: list[dict]) -> dict[str, float]:
-        """Batched REINFORCE across real_episodes_per_iter episodes.
-
-        Cross-episode return normalization is more stable than per-episode.
-        std(unbiased=False) avoids NaN when a single episode has only 1 step.
-        Per-step ill_masks from collection are reused so log_prob uses the same
-        masked distribution as the behavior policy.
-        """
         all_obs, all_actions, all_returns, all_masks = [], [], [], []
 
         for ep in episodes:
@@ -256,7 +230,6 @@ class BaselineRunner:
 
         return {"actor_loss": float(loss.detach())}
 
-    # ── Main loop ─────────────────────────────────────────────────────────────
 
     def run(self) -> None:
         t_start = time.time()
@@ -274,9 +247,6 @@ class BaselineRunner:
 
         metrics_path = pathlib.Path(self.output_path) / "metrics.jsonl"
         metrics_file = metrics_path.open("w")
-        # per-step training trajectory (same schema as DreamQAS phase2_surrogate/runner.py):
-        # iter, ep, step, action, energy, true_error(mHa), reward, done -> enables the
-        # training-time sliding-window episode-best (min-over-prefix) speed comparison.
         traj_path = pathlib.Path(self.output_path) / "trajectory.jsonl"
         traj_file = traj_path.open("w")
 
@@ -288,17 +258,16 @@ class BaselineRunner:
                 traj = self._collect_episode()
                 episodes.append(traj)
                 self.total_eps += 1
-                self.total_vqe_calls += traj["n_steps"]   # per-circuit VQE unit (1 per step)
+                self.total_vqe_calls += traj["n_steps"]
                 for st in range(traj["n_steps"]):
                     traj_file.write(json.dumps({
                         "iter": iteration, "ep": ep_in_iter, "step": st,
                         "action": int(traj["actions"][st]),
                         "energy": float(traj["step_energies"][st]),
-                        "true_error": float(traj["step_errs"][st]) * 1000.0,   # mHa
+                        "true_error": float(traj["step_errs"][st]) * 1000.0,
                         "reward": float(traj["rewards"][st]),
                         "done": int(traj["step_dones"][st]),
                     }) + "\n")
-                # Symmetric with v2: best circuit found at ANY step.
                 if traj["min_error"] < self.best_error:
                     self.best_error = traj["min_error"]
                     self.best_seq = list(traj["best_prefix"])
@@ -339,14 +308,13 @@ class BaselineRunner:
             metrics_file.flush()
             traj_file.flush()
 
-            # standardized episode-checkpoint hook (¼-dense 15 + every 1500)
             while self.ckpt_ptr < len(self.ckpt_sched) and self.total_eps >= self.ckpt_sched[self.ckpt_ptr]:
                 self._save_ckpt(self.ckpt_sched[self.ckpt_ptr])
                 self.ckpt_ptr += 1
 
         metrics_file.close()
         traj_file.close()
-        self._save_ckpt(self.total_eps)   # final checkpoint at the true episode count
+        self._save_ckpt(self.total_eps)
 
         total_time = time.time() - t_start
         print(f"\nBaseline training complete: {self.max_episodes} episodes ({n_iters} iters)")
@@ -354,21 +322,55 @@ class BaselineRunner:
         print(f"Total time: {total_time:.1f}s  |  VQE calls: {self.total_vqe_calls}  |  ckpts: {self.ckpt_ptr+1}")
 
 
-def evaluate_baseline_checkpoint(ckpt_path, n_episodes, device=None, chem_acc_mHa=1.6, eval_seed=None):
-    """Frozen offline eval of a RLQAS-baseline checkpoint: rebuild env + actor from the saved
-    env_cfg, load state_dict, run `n_episodes` fresh side-effect-free episodes to fixed max depth,
-    return the same `episode_best_stats` schema as the DreamQAS method (+ cumulative training VQE)."""
+def baseline_noise_config(env):
+    """Return the attached evaluator's noise specification."""
+    ev = getattr(env, "_noisy_eval", None)
+    if ev is None:
+        return {"mode": "off"}
+    spec = ev.spec
+    return {"mode": "ptm", "p1q": spec.p1q, "p2q": spec.p2q,
+            "p_ro": spec.p_ro, "basis_change": spec.model_basis_change}
+
+
+def load_baseline_checkpoint(ck, device=None, legacy_noise_config=None):
     from utils import get_config
     from environment import CircuitEnv
-    ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    # Legacy checkpoints require explicit noise settings.
+    noise = ck.get("noise_config")
+    if noise is None:
+        if legacy_noise_config is None:
+            raise ValueError('Legacy baseline checkpoint has no noise metadata. Supply '
+                             '--legacy_noise_config JSON after checking its training conditions; '
+                             'use {"mode":"off"} only for a known noiseless run.')
+        noise = legacy_noise_config
+    if not isinstance(noise, dict) or noise.get("mode") not in ("off", "ptm"):
+        raise ValueError("noise_config must specify mode off or ptm")
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     conf = get_config(ck.get("experiment_name", "analysis/"), ck["env_cfg"] + ".cfg")
     env = CircuitEnv(conf, device=torch.device("cpu"))
-    r = BaselineRunner(env=env, conf=conf, device=dev, output_path="/tmp/_baseline_eval",
+    if noise["mode"] == "ptm":
+        import sys
+        code_dir = str(pathlib.Path(__file__).resolve().parent.parent)
+        if code_dir not in sys.path:
+            sys.path.insert(0, code_dir)
+        from noise_ptm.integration import build_evaluator
+        required = {"p1q", "p2q", "p_ro", "basis_change"}
+        if not required.issubset(noise):
+            raise ValueError(f"PTM noise_config requires {sorted(required)}")
+        env.attach_noisy_evaluator(build_evaluator(env, **noise))
+    r = BaselineRunner(env=env, conf=conf, device=dev, output_path="",
                        seed=ck.get("seed", 0), actor_hidden_dim=ck.get("actor_hidden_dim", 512),
-                       molecule=ck.get("molecule", ""), env_cfg=ck.get("env_cfg", ""))
+                       molecule=ck.get("molecule", ""), env_cfg=ck.get("env_cfg", ""),
+                       experiment_name=ck.get("experiment_name", "analysis/"))
     r.actor.load_state_dict(ck["actor"])
     r.actor.eval()
+    return r
+
+
+def evaluate_baseline_checkpoint(ckpt_path, n_episodes, device=None, chem_acc_mHa=1.6,
+                                 eval_seed=None, legacy_noise_config=None):
+    ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    r = load_baseline_checkpoint(ck, device, legacy_noise_config)
     if eval_seed is None:
         eval_seed = 100003 + 1009 * int(ck.get("seed", 0)) + int(ck["episode"])
     torch.manual_seed(eval_seed); np.random.seed(eval_seed % (2 ** 31 - 1))

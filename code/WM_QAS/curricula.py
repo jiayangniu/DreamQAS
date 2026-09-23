@@ -1,9 +1,8 @@
-
 class MovingThreshold:
     def __init__(self, config, **kw):
-        self.amortisation = config['shift_threshold_ball'] 
-        self.greedy_shift_time = config['shift_threshold_time'] 
-        self.min_en = kw.get('target_energy') 
+        self.amortisation = config['shift_threshold_ball']
+        self.greedy_shift_time = config['shift_threshold_time']
+        self.min_en = kw.get('target_energy')
         self.success_thresh = config["success_thresh"]
         self.succ_radius_shift = config["succ_radius_shift"]
         self.succes_switch = config["succes_switch"]
@@ -22,7 +21,7 @@ class MovingThreshold:
                 self.current_threshold -= self.amortisation/self.succ_radius_shift
                 self.success_counter = 0
                 self.radius_shift_counter += 1
-        
+
         return self.current_threshold
 
 
@@ -37,9 +36,9 @@ class MovingThreshold:
                     self.success_counter = 0
             else:
                 self.current_threshold = abs(self.min_en - self.lowest_energy)
-  
+
         return self.current_threshold
-    
+
     def get_current_threshold(self):
         return self.current_threshold
 
@@ -48,25 +47,25 @@ class MovingThreshold:
         if energy_done:
             self.reduce_amortisation()
         self.greedy_shift()
-    
+
 class SuccesCountThreshold:
     def __init__(self, config, **kw):
-        self.min_en = kw.get('target_energy') 
+        self.min_en = kw.get('target_energy')
         self.success_thresh = config["success_thresh"]
         self.current_threshold = config['accept_err']
 
         self.lowest_energy = self.min_en + self.current_threshold
         self.success_counter = 0
-  
+
     def greedy_shift(self):
         if self.success_thresh:
             self.success_counter += 1
             if self.success_counter >= self.success_thresh:
-                self.success_counter = 0 
+                self.success_counter = 0
                 self.current_threshold = abs(self.min_en - self.lowest_energy)
-  
+
         return self.current_threshold
-    
+
     def get_current_threshold(self):
         return self.current_threshold
 
@@ -78,11 +77,11 @@ class SuccesCountThreshold:
 
 class VanillaCurriculum:
     def __init__(self, config, **kw):
-        
+
         self.thresholds = config['thresholds']
         self.episodes = config['switch_episodes']
         self.episodes_completed = 0
-        self.min_en = kw.get('target_energy') 
+        self.min_en = kw.get('target_energy')
         self.current_threshold = config['accept_err']
         self.lowest_energy = self.min_en + self.current_threshold
 

@@ -1,0 +1,26 @@
+{
+  "BEH2_6q_geom_H_0._0._-1.33;_Be_0._0._0.;_H_0._0._1.33_jordan_wigner.npz": {
+    "sha256": "3929a09b8ba7e45bd8332ef3f40d5d2708588603b326006e1bba3ecd43d08885",
+    "bytes": 68412
+  },
+  "BEH2_8q_geom_Be_.0_.0_0.0;_H_.0_.0_1.326;_H_.0_.0_-1.326_jordan_wigner.npz": {
+    "sha256": "33512d9d46df91afcda10f8f6f78e37a37300a3f5bbd8f4590184917aaf80642",
+    "bytes": 1058380
+  },
+  "H2O_8q_geom_H_-0.021,_-0.002,_.0;_O_0.835,_0.452,_0;_H_1.477,_-0.273,_0_jordan_wigner.npz": {
+    "sha256": "5343762ebc4e28f00684f3a374239e8690542f7ee06e2912985bda6b2259b26c",
+    "bytes": 1053200
+  },
+  "H2O_8q_geom_O_.0_.0_0.0;_H_.0_0.757_0.586;_H_.0_-0.757_0.586_jordan_wigner.npz": {
+    "sha256": "37af6243bb742eb79eeeda819944a3b4ec048f9d5e498ed8addeb05aa60e5bd2",
+    "bytes": 1074794
+  },
+  "LiH_4q_geom_Li_.0_.0_.0;_H_.0_.0_3.4_parity.npz": {
+    "sha256": "5d92593e40807b94d6617a580b3178deb41f14b4a6cff2fc996c08a5e37ed233",
+    "bytes": 4808
+  },
+  "LiH_6q_geom_Li_.0_.0_.0;_H_.0_.0_2.2_jordan_wigner.npz": {
+    "sha256": "416565a44bece0c1f2eb477b7cca6db96d06c5153e321981573b00f4b5b9a832",
+    "bytes": 36200
+  }
+}

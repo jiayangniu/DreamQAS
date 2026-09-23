@@ -1,13 +1,3 @@
-"""The single entry point DreamQAS calls to turn noise on.
-
-Kept here rather than in ``code/WM_QAS/`` so that the wiring on the DreamQAS side stays
-three lines per call site, and so this package has no dependency on DreamQAS's ``Config``
-dataclass (it only reads plain attributes off the env).
-
-Contract: returns ``None`` when ``mode == "off"``, in which case the caller must leave
-``env._noisy_eval`` alone and DreamQAS behaves byte-identically to before.
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -27,12 +17,6 @@ def build_evaluator(
     basis_change: bool = True,
     verbose: bool = True,
 ):
-    """Build a :class:`NoisyEvaluator` for ``env``, or return ``None`` if noise is off.
-
-    Reads ``hamiltonian`` / ``num_qubits`` / ``energy_shift`` / ``num_layers`` off the
-    ``CircuitEnv``. Raises rather than silently degrading: a run that *meant* to be noisy
-    but quietly wasn't would be indistinguishable from a clean run in the output.
-    """
     mode = str(mode or "off").lower()
     if mode not in _VALID_MODES:
         raise ValueError(f"noise_mode must be one of {_VALID_MODES}; got {mode!r}")
@@ -68,11 +52,6 @@ def build_evaluator(
 
 
 def attach(env, cfg, verbose: bool = True):
-    """Read the five ``noise_*`` fields off ``cfg`` and attach the evaluator to ``env``.
-
-    No-op when ``cfg.noise_mode`` is absent or "off", so old checkpoints (whose stored
-    cfg predates these fields) keep working unchanged.
-    """
     ev = build_evaluator(
         env,
         mode=getattr(cfg, "noise_mode", "off"),

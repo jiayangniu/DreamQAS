@@ -1,24 +1,3 @@
-"""Cost benchmark — run this BEFORE launching any noisy fleet.
-
-Measures real DreamQAS episodes (the actual CircuitEnv + COBYLA loop, not a microbench)
-with the noise backend on and off, and projects to the full 15,000-episode budget.
-
-The number that matters is the **ratio** noisy/clean: the clean LiH-4q runs are already
-done, so their recorded wall_clock times the ratio is the fleet cost.
-
-Usage:
-    python code/noise_ptm/tests/bench_cost.py --episodes 3
-    python code/noise_ptm/tests/bench_cost.py --episodes 3 --device gpu
-
-Notes
------
-* Defaults to JAX-on-CPU. The box normally has a training fleet on its GPUs, and a 4q
-  PTM kernel is round-trip-latency-bound rather than FLOP-bound, so CPU is not obviously
-  worse — that is exactly what this script is for.
-* ``--device gpu`` sets XLA_PYTHON_CLIENT_PREALLOCATE=false so JAX does not grab the
-  whole card out from under other jobs.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -72,7 +51,6 @@ def main():
         return env
 
     def run_episode(env, rng, max_step):
-        """Random-action episode of the same shape the RL loop produces."""
         env.reset()
         n = env.num_qubits
         nfev = 0
@@ -92,7 +70,7 @@ def main():
         env = build(noisy)
         max_step = a.max_step or env.num_layers
         rng = np.random.default_rng(7)
-        for _ in range(a.warmup):                     # JIT compile / cache warm
+        for _ in range(a.warmup):
             run_episode(env, np.random.default_rng(999), max_step)
         t0 = time.perf_counter()
         total_nfev = 0

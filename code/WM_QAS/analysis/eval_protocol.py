@@ -1,20 +1,3 @@
-"""Standardized-eval-protocol driver + aggregation (C1).
-
-Two stages:
-  1. eval-pass: for a training run dir, reload each episode-checkpoint, run the frozen offline
-     eval (20 fresh episodes for intermediate checkpoints, 100 for the final), and write one
-     JSON line per checkpoint to `<run_dir>/eval.jsonl` — schema = episode_best_stats +
-     {episode, cum_train_vqe_calls, cum_train_vqe_nfev}. Dispatches DreamQAS-method vs
-     RLQAS-baseline checkpoints automatically.
-  2. aggregate: read many runs' eval.jsonl, group by (method,molecule) across seeds, and emit
-     the per-cum-VQE learning curve (cross-seed median + stratified-bootstrap 95% CI), the main
-     table (mean±std / median / SR@chem at the ¼-budget point and the final point), and
-     VQE-to-target (first checkpoint whose cross-seed median crosses a threshold).
-
-CLI:
-  python analysis/eval_protocol.py pass  <run_dir> [--device cuda:0] [--n_final 100]
-  python analysis/eval_protocol.py agg   <glob...>  [--chem 1.6]
-"""
 import argparse
 import glob
 import json
@@ -27,29 +10,30 @@ import numpy as np
 import torch
 
 
-# ---------------- stage 1: eval pass ----------------
-def eval_one(ckpt_path, n_episodes, device):
-    """Dispatch a single checkpoint to the right frozen-eval function -> stats dict."""
+def eval_one(ckpt_path, n_episodes, device, legacy_noise_config=None):
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    if "wm" in ck:                                    # DreamQAS method checkpoint
+    if "wm" in ck:
         from phase2_surrogate import eval_harness
         return eval_harness.evaluate_checkpoint(ckpt_path, n_episodes, device=device)
-    else:                                             # RLQAS baseline checkpoint
+    else:
         from runner_baseline import evaluate_baseline_checkpoint
-        return evaluate_baseline_checkpoint(ckpt_path, n_episodes, device=device)
+        return evaluate_baseline_checkpoint(ckpt_path, n_episodes, device=device, legacy_noise_config=legacy_noise_config)
 
 
-def run_eval_pass(run_dir, device="cuda:0", n_inter=20, n_final=100):
+def run_eval_pass(run_dir, device=None, n_inter=20, n_final=100, legacy_noise_config=None):
+    run_dir = os.path.abspath(os.path.expanduser(run_dir))
+    if min(n_inter, n_final) < 1:
+        raise ValueError("Evaluation episode counts must be positive")
     cks = sorted(glob.glob(f"{run_dir}/ckpt/ep*.pt"),
                  key=lambda p: int(os.path.basename(p)[2:-3]))
     if not cks:
-        print(f"[eval-pass] no checkpoints under {run_dir}/ckpt/"); return
+        raise FileNotFoundError(f"No checkpoints under {run_dir}/ckpt/")
     final_ep = max(int(os.path.basename(p)[2:-3]) for p in cks)
     out = open(f"{run_dir}/eval.jsonl", "w")
     for p in cks:
         ep = int(os.path.basename(p)[2:-3])
         n = n_final if ep == final_ep else n_inter
-        stats = eval_one(p, n, device)
+        stats = eval_one(p, n, device, legacy_noise_config)
         out.write(json.dumps(stats, default=str) + "\n"); out.flush()
         print(f"[eval-pass] ep{ep:>6} n={n:>3} median={stats['median']} SR={stats['success_rate']} "
               f"cum_vqe={stats['cum_train_vqe_calls']}", flush=True)
@@ -57,9 +41,7 @@ def run_eval_pass(run_dir, device="cuda:0", n_inter=20, n_final=100):
     print(f"[eval-pass] wrote {run_dir}/eval.jsonl ({len(cks)} checkpoints)")
 
 
-# ---------------- stage 2: aggregation ----------------
 def _boot_ci(vals, reps=2000, lo=2.5, hi=97.5, seed=0):
-    """Bootstrap CI of the median across seeds (few seeds -> percentile bootstrap)."""
     v = np.asarray([x for x in vals if x is not None and np.isfinite(x)], float)
     if v.size == 0:
         return (None, None, None)
@@ -69,23 +51,25 @@ def _boot_ci(vals, reps=2000, lo=2.5, hi=97.5, seed=0):
 
 
 def aggregate(run_dirs, chem=1.6, targets=(1.6,)):
-    """Group runs by (method, molecule); cross-seed learning curve + VQE-to-target."""
     from collections import defaultdict
-    groups = defaultdict(list)   # (method,mol) -> list of per-run [ {episode,median,SR,cum_vqe,...} ]
+    groups = defaultdict(list)
     for rd in run_dirs:
         ejl = f"{rd}/eval.jsonl"
         if not os.path.exists(ejl):
             continue
         rows = [json.loads(l) for l in open(ejl) if l.strip()]
-        name = os.path.basename(rd.rstrip("/"))       # e.g. gru_energy_surrogate_BeH2_8q_s0
-        # crude parse: method-ish prefix + molecule token + seed
-        mol = next((m for m in ("BeH2_10q", "BeH2_8q", "BeH2", "LiH6q", "LiH4q") if m in name), "?")
+        name = os.path.basename(rd.rstrip("/"))
+        baseline = name.startswith("seed_")
+        if baseline:
+            name = os.path.basename(os.path.dirname(rd.rstrip("/")))
+        mol = next((m for m in ("BeH2_12q", "BeH2_10q", "BeH2_8q", "H2O_8q", "BeH2", "LiH6q", "LiH4q") if m in name), "?")
         method = name.split(f"_{mol}_")[0] if f"_{mol}_" in name else name
+        if baseline:
+            method = "RLQAS"
         groups[(method, mol)].append(rows)
 
     report = {}
     for (method, mol), runs in sorted(groups.items()):
-        # align by episode across seeds
         by_ep = defaultdict(lambda: {"median": [], "cum_vqe": [], "SR": []})
         for rows in runs:
             for r in rows:
@@ -111,15 +95,18 @@ def aggregate(run_dirs, chem=1.6, targets=(1.6,)):
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p1 = sub.add_parser("pass"); p1.add_argument("run_dir"); p1.add_argument("--device", default="cuda:0")
+    p1 = sub.add_parser("pass"); p1.add_argument("run_dir"); p1.add_argument("--device", default=None)
+    p1.add_argument("--legacy_noise_config", type=json.loads)
     p1.add_argument("--n_inter", type=int, default=20); p1.add_argument("--n_final", type=int, default=100)
     p2 = sub.add_parser("agg"); p2.add_argument("globs", nargs="+"); p2.add_argument("--chem", type=float, default=1.6)
     a = ap.parse_args()
     if a.cmd == "pass":
-        run_eval_pass(a.run_dir, a.device, a.n_inter, a.n_final)
+        run_eval_pass(a.run_dir, a.device, a.n_inter, a.n_final, a.legacy_noise_config)
     else:
         run_dirs = [d for g in a.globs for d in glob.glob(g) if os.path.isdir(d)]
         rep = aggregate(run_dirs, a.chem)
+        if not rep:
+            raise FileNotFoundError("No evaluation records matched the supplied run directories")
         for k, v in rep.items():
             last = v["curve"][-1] if v["curve"] else {}
             print(f"\n=== {k}  (n_seeds={v['n_seeds']}) ===")
